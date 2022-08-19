@@ -10,7 +10,6 @@ import Firebase
 import FirebaseAuth
 import SDWebImageSwiftUI
 
-
 class CreateNewMessageViewModel: ObservableObject {
     
     @Published var users = [ChatUser]()
