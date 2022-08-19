@@ -8,18 +8,74 @@
 import SwiftUI
 import Firebase
 import FirebaseAuth
+import FirebaseFirestore
+
+struct FirebaseConstrants {
+    static let fromID = "fromID"
+    static let toID = "toID"
+    static let text = "text"
+}
+
+struct ChatMessage: Identifiable {
+    var id: String { documentId }
+    let documentId: String
+    let fromID, toID, text: String
+    
+    init(documentId: String, data: [String: Any]) {
+        self.documentId = documentId
+        self.fromID = data[FirebaseConstrants.fromID] as? String ?? ""
+        self.toID = data[FirebaseConstrants.toID] as? String ?? ""
+        self.text = data[FirebaseConstrants.text] as? String ?? ""
+    }
+}
 
 class ChatLogViewModel: ObservableObject {
     
     @Published var chatText = ""
     @Published var errorMessage = ""
     
+    @Published var chatMessages = [ChatMessage]()
+    
     let chatUser: ChatUser?
     
     init(chatUser: ChatUser?) {
         self.chatUser = chatUser
         
+        fetchMessages()
+        
     }
+    
+    private func fetchMessages() {
+        guard let fromID = Auth.auth().currentUser?.uid else { return }
+        
+        guard let toID = chatUser?.uid else { return }
+        
+        Firestore.firestore().collection("messages")
+            .document(fromID)
+            .collection(toID)
+            .order(by: "timestamp")
+            .addSnapshotListener { querySnapshot, error in
+            if let error = error {
+                self.errorMessage = "Failed to listen for messages \(error)"
+                return
+            }
+            
+            querySnapshot?.documentChanges.forEach({ change in
+                if change.type == .added {
+                    let data = change.document.data()
+                    self.chatMessages.append(.init(documentId: change.document.documentID, data: data))
+                }
+            })
+            
+//            querySnapshot?.documents.forEach({ queryDocumentSnapshot in
+//                let data = queryDocumentSnapshot.data()
+//                let docId = queryDocumentSnapshot.documentID
+//                // let chatMessage = ChatMessage(data: data)
+//                self.chatMessages.append(.init(documentId: docId, data: data))
+//            })
+        }
+    }
+    
     
     func handleSend() {
         print(chatText)
@@ -27,12 +83,14 @@ class ChatLogViewModel: ObservableObject {
         
         guard let toID = chatUser?.uid else { return }
         
-        let document = Firestore.firestore().collection("messages")
+        let document = Firestore.firestore()
+            .collection("messages")
             .document(fromID)
             .collection(toID)
             .document()
+            
         
-        let messageData = ["fromID": fromID, "toId": toID, "text": self.chatText, "timestamp": Timestamp()] as [String : Any]
+        let messageData = [FirebaseConstrants.fromID: fromID, FirebaseConstrants.toID: toID, FirebaseConstrants.text: self.chatText, "timestamp": Timestamp()] as [String : Any]
         
         document.setData(messageData) { error in
             if let error = error {
@@ -88,19 +146,38 @@ struct ChatLogView: View {
     
     private var messagesView: some View {
         ScrollView {
-            ForEach(0..<20) { num in
-                HStack {
-                    Spacer()
-                    HStack {
-                        Text("FAKE MESSAGE FOR NOW")
-                            .foregroundColor(.white)
+            ForEach(vm.chatMessages) { message in
+                VStack {
+                    if message.fromID == Auth.auth().currentUser?.uid {
+                        HStack {
+                            Spacer()
+                            HStack {
+                                Text(message.text)
+                                    .foregroundColor(.white)
+                            }
+                            .padding()
+                            .background(Color.blue)
+                            .cornerRadius(8)
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                    } else {
+                        HStack {
+                            HStack {
+                                Text(message.text)
+                                    .foregroundColor(Color(.label))
+                            }
+                            .padding()
+                            .background(Color.white)
+                            .cornerRadius(8)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 8)
                     }
-                    .padding()
-                    .background(Color.blue)
-                    .cornerRadius(8)
                 }
-                .padding(.horizontal)
-                .padding(.top, 8)
+            
+              
             }
             
             HStack{ Spacer() }
@@ -109,6 +186,8 @@ struct ChatLogView: View {
         .background(Color(.init(white: 0.95, alpha: 1)))
         
     }
+    
+    
     
     private var chatBottomBar: some View {
         HStack(spacing: 16) {
