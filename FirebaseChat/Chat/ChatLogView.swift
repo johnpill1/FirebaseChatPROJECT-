@@ -6,16 +6,76 @@
 //
 
 import SwiftUI
+import Firebase
+import FirebaseAuth
+
+class ChatLogViewModel: ObservableObject {
+    
+    @Published var chatText = ""
+    @Published var errorMessage = ""
+    
+    let chatUser: ChatUser?
+    
+    init(chatUser: ChatUser?) {
+        self.chatUser = chatUser
+        
+    }
+    
+    func handleSend() {
+        print(chatText)
+        guard let fromID = Auth.auth().currentUser?.uid else { return }
+        
+        guard let toID = chatUser?.uid else { return }
+        
+        let document = Firestore.firestore().collection("messages")
+            .document(fromID)
+            .collection(toID)
+            .document()
+        
+        let messageData = ["fromID": fromID, "toId": toID, "text": self.chatText, "timestamp": Timestamp()] as [String : Any]
+        
+        document.setData(messageData) { error in
+            if let error = error {
+                self.errorMessage = "Failed to save message to firestore \(error)"
+                
+            }
+            self.chatText = ""
+        }
+        
+        
+        let recipientMessageDocument = Firestore.firestore().collection("messages")
+            .document(toID)
+            .collection(fromID)
+            .document()
+        
+        recipientMessageDocument.setData(messageData) { error in
+            if let error = error {
+                self.errorMessage = "Failed to save message to firestore \(error)"
+                
+            }
+        }
+        
+    }
+    
+}
+
+
 
 struct ChatLogView: View {
     
     let chatUser: ChatUser?
     
-    @State var chatText = ""
+    init(chatUser: ChatUser?) {
+        self.chatUser = chatUser
+        self.vm = .init(chatUser: chatUser)
+    }
+    
+    @ObservedObject var vm: ChatLogViewModel
     
     var body: some View {
         ZStack {
             messagesView
+            Text(vm.errorMessage)
             VStack(spacing: 0) {
                 Spacer()
                 chatBottomBar
@@ -23,7 +83,7 @@ struct ChatLogView: View {
             }
         }
         .navigationTitle(chatUser?.email ?? "")
-            .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.inline)
     }
     
     private var messagesView: some View {
@@ -44,10 +104,10 @@ struct ChatLogView: View {
             }
             
             HStack{ Spacer() }
-            .frame(height: 50)
+                .frame(height: 50)
         }
         .background(Color(.init(white: 0.95, alpha: 1)))
-                    
+        
     }
     
     private var chatBottomBar: some View {
@@ -57,12 +117,14 @@ struct ChatLogView: View {
                 .foregroundColor(Color(.darkGray))
             ZStack {
                 DescriptionPlaceholder()
-                TextEditor(text: $chatText)
-                    .opacity(chatText.isEmpty ? 0.5 : 1)
+                TextEditor(text: $vm.chatText)
+                    .opacity(vm.chatText.isEmpty ? 0.5 : 1)
             }
             .frame(height: 40)
             
             Button {
+                // SEND TEXT BUTTON ACTION
+                vm.handleSend()
                 
             } label: {
                 Text("Send")
