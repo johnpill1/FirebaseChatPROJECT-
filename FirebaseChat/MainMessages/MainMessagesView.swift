@@ -5,23 +5,72 @@
 //  Created by John Pill on 14/08/2022.
 //
 
+//                           
+
 import SwiftUI
 import Firebase
+import FirebaseAuth
 import FirebaseStorage
 import FirebaseFirestore
 import SDWebImageSwiftUI
+import FirebaseFirestoreSwift
+
+
 
 class MainMessagesViewModel: ObservableObject {
     
     @Published var errorMessage = ""
     @Published var chatUser: ChatUser?
+    @Published var recentMessages = [RecentMessage]()
     
     init() {
         DispatchQueue.main.async {
             self.isUserCurrentlyLoggedOut = Auth.auth().currentUser?.uid == nil
         }
         fetchCurrentUser()
+        
+        fetchRecentMessages()
+        
     }
+    
+    private var firestoreListener: ListenerRegistration?
+    
+    func fetchRecentMessages() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        
+        firestoreListener?.remove()
+        self.recentMessages.removeAll()
+        
+        firestoreListener = Firestore.firestore()
+            .collection("recent_messages")
+            .document(uid)
+            .collection("messages")
+            .order(by: "timestamp")
+            .addSnapshotListener { querySnapshot, error in
+                if let error = error {
+                    self.errorMessage = "Failed to listen for recent messages: \(error)"
+                    return
+                }
+                
+                querySnapshot?.documentChanges.forEach({ change in
+                    let docId = change.document.documentID
+                    
+                    if let index = self.recentMessages.firstIndex(where: { rm in
+                        return rm.id == docId
+                    }) {
+                        self.recentMessages.remove(at: index)
+                        
+                    }
+                    
+                    if let rm = try? change.document.data(as: RecentMessage.self) {
+                        self.recentMessages.insert(rm, at: 0)
+                    }
+                    // self.recentMessages.insert(.init(documentId: docId, data: change.document.data()), at: 0)
+                    
+                })
+            }
+    }
+    
     
     func fetchCurrentUser() {
         
@@ -38,23 +87,8 @@ class MainMessagesViewModel: ObservableObject {
                 return
             }
             
-            guard let data = snapshot?.data() else {
-                self.errorMessage = "No data found"
-                return
-            }
-            
-            self.chatUser = .init(data: data)
-            
-            //self.errorMessage = "Data: \(data.description)"
-            
-            // Decode the user info to add into custom header.
-            //            let uid = data["uid"] as? String ?? ""
-            //            let email = data["email"] as? String ?? ""
-            //            let profileImage = data["profileImage"] as? String ?? ""
-            //
-            //            self.chatUser = ChatUser(uid: uid, email: email, profileImage: profileImage)
-            
-            //self.errorMessage = chatUser.profileImage
+            self.chatUser = try? snapshot?.data(as: ChatUser.self)
+            self.chatUser = self.chatUser
         }
     }
     
@@ -74,6 +108,7 @@ struct MainMessagesView: View {
     
     @ObservedObject private var vm = MainMessagesViewModel()
     
+    private var chatLogViewModel = ChatLogViewModel(chatUser: nil)
     
     var body: some View {
         NavigationView {
@@ -85,7 +120,7 @@ struct MainMessagesView: View {
                 messageView
                 
                 NavigationLink("", isActive: $shouldNavigateToChatLogView) {
-                    ChatLogView(chatUser: self.chatUser)
+                    ChatLogView(vm: chatLogViewModel)
                 }
             }
             .overlay(
@@ -104,16 +139,16 @@ struct MainMessagesView: View {
             WebImage(url: URL(string: vm.chatUser?.profileImage ?? ""))
                 .resizable()
                 .scaledToFill()
-                .frame(width: 50, height: 50)
+                .frame(width: 54, height: 54)
                 .clipped()
-                .cornerRadius(50)
-                .overlay(RoundedRectangle(cornerRadius: 44) .stroke(Color(.label), lineWidth: 1))
-                .shadow(radius: 5)
+                .cornerRadius(54)
+                .overlay(RoundedRectangle(cornerRadius: 64) .stroke(Color(.label), lineWidth: 1))
+                .shadow(radius: 10)
             
             
             
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(vm.chatUser?.email ?? "")")
+                Text("\(vm.chatUser?.username ?? "")")
                     .font(.system(size: 24, weight: .bold))
                 
                 HStack {
@@ -134,6 +169,7 @@ struct MainMessagesView: View {
             }
         }
         .padding()
+        .background(Color(.init(red: 0, green: 0, blue: 0, alpha: 0.03)))
         .actionSheet(isPresented: $shouldShowLogOutOption) {
             .init(title: Text("Settings"), message:
                     Text("What do you want to do?"), buttons: [
@@ -147,44 +183,63 @@ struct MainMessagesView: View {
             LoginView(didCompleteLoginProcess: {
                 self.vm.isUserCurrentlyLoggedOut = false
                 self.vm.fetchCurrentUser()
+                self.vm.fetchRecentMessages()
             }) // If user Logs out - go to log in page.
         }
     }
     
-
+    
     
     private var messageView: some View {
         ScrollView {
-            ForEach(0..<10, id: \.self) { num in
+            ForEach(vm.recentMessages) { recentMessage in
                 VStack {
                     
-                    NavigationLink {
-                        Text("Destination Link")
+                    Button {
+                        let uid = Auth.auth().currentUser?.uid == recentMessage.fromID ? recentMessage.toID : recentMessage.fromID
+                        
+                        self.chatUser = .init(id: uid, uid: uid, email: recentMessage.email, profileImage: recentMessage.profileImage)
+                        
+                        self.chatLogViewModel.chatUser = self.chatUser
+                        self.chatLogViewModel.fetchMessages()
+                        self.shouldNavigateToChatLogView.toggle()
+                        
                     } label: {
                         HStack(spacing: 16) {
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 32))
-                                .padding()
-                                .overlay(RoundedRectangle(cornerRadius: 44)
-                                    .stroke(Color(.label), lineWidth: 1))
+                            WebImage(url: URL(string: recentMessage.profileImage))
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipped()
+                                .cornerRadius(64)
+                                .overlay(RoundedRectangle(cornerRadius: 64)
+                                    .stroke(Color.black, lineWidth: 1))
+                                .shadow(radius: 5)
                             
-                            VStack(alignment: .leading) {
-                                Text("Username ")
+                            // Image(systemName: "person.fill")
+                            // .font(.system(size: 32))
+                            //.padding()
+                            //.overlay(RoundedRectangle(cornerRadius: 44)
+                            //  .stroke(Color(.label), lineWidth: 1))
+                            
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(recentMessage.username)
                                     .font(.system(size: 16, weight: .bold))
-                                Text("Message sent to user")
+                                    .foregroundColor(Color(.label))
+                                Text(recentMessage.text)
                                     .font(.system(size: 14))
+                                    .foregroundColor(Color(.darkGray))
+                                    .multilineTextAlignment(.leading)
+                                
                             }
                             Spacer()
                             
-                            Text("22d")
+                            // MESSAGE DATE
+                            Text(recentMessage.timeAgo)
                                 .font(.system(size: 14, weight: .semibold))
                         }
                     }
-                        
-                    }
-                    
-                    
-   
+                }
                 Divider()
                     .padding(.vertical, 8)
             } .padding(.horizontal)
@@ -221,6 +276,8 @@ struct MainMessagesView: View {
                 print(user.email)
                 self.shouldNavigateToChatLogView.toggle()
                 self.chatUser = user
+                self.chatLogViewModel.chatUser = user
+                self.chatLogViewModel.fetchMessages()
             })
         }
     }
@@ -236,6 +293,6 @@ struct MainMessagesView: View {
 struct MainMessagesView_Previews: PreviewProvider {
     static var previews: some View {
         MainMessagesView()
-            //.preferredColorScheme(.dark)
+        //.preferredColorScheme(.dark)
     }
 }

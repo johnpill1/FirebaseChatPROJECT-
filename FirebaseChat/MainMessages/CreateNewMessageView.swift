@@ -9,6 +9,7 @@ import SwiftUI
 import Firebase
 import FirebaseAuth
 import SDWebImageSwiftUI
+import FirebaseFirestoreSwift
 
 class CreateNewMessageViewModel: ObservableObject {
     
@@ -28,8 +29,11 @@ class CreateNewMessageViewModel: ObservableObject {
             }
             
             documentsSnapshot?.documents.forEach({ snapshot in
-                let data = snapshot.data()
-                self.users.append(.init(data: data))
+                let user = try? snapshot.data(as: ChatUser.self)
+                if user?.uid != Auth.auth().currentUser?.uid {
+                    self.users.append(user!)
+                    
+                }
                 
             })
         }

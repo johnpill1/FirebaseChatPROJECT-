@@ -10,33 +10,25 @@ import Firebase
 import FirebaseAuth
 import FirebaseFirestore
 
-struct FirebaseConstrants {
+struct FirebaseConstants {
     static let fromID = "fromID"
     static let toID = "toID"
     static let text = "text"
+    static let email = "email"
+    static let profileImage = "profileImage"
 }
 
-struct ChatMessage: Identifiable {
-    var id: String { documentId }
-    let documentId: String
-    let fromID, toID, text: String
-    
-    init(documentId: String, data: [String: Any]) {
-        self.documentId = documentId
-        self.fromID = data[FirebaseConstrants.fromID] as? String ?? ""
-        self.toID = data[FirebaseConstrants.toID] as? String ?? ""
-        self.text = data[FirebaseConstrants.text] as? String ?? ""
-    }
-}
+
 
 class ChatLogViewModel: ObservableObject {
     
     @Published var chatText = ""
     @Published var errorMessage = ""
+    @Published var count = 0
     
     @Published var chatMessages = [ChatMessage]()
     
-    let chatUser: ChatUser?
+    var chatUser: ChatUser?
     
     init(chatUser: ChatUser?) {
         self.chatUser = chatUser
@@ -45,35 +37,42 @@ class ChatLogViewModel: ObservableObject {
         
     }
     
-    private func fetchMessages() {
+    var firestoreListener: ListenerRegistration?
+    
+    
+    func fetchMessages() {
         guard let fromID = Auth.auth().currentUser?.uid else { return }
         
         guard let toID = chatUser?.uid else { return }
-        
-        Firestore.firestore().collection("messages")
+        chatMessages.removeAll()
+        firestoreListener = Firestore.firestore().collection("messages")
             .document(fromID)
             .collection(toID)
             .order(by: "timestamp")
             .addSnapshotListener { querySnapshot, error in
-            if let error = error {
-                self.errorMessage = "Failed to listen for messages \(error)"
-                return
-            }
-            
-            querySnapshot?.documentChanges.forEach({ change in
-                if change.type == .added {
-                    let data = change.document.data()
-                    self.chatMessages.append(.init(documentId: change.document.documentID, data: data))
+                if let error = error {
+                    self.errorMessage = "Failed to listen for messages \(error)"
+                    return
                 }
-            })
-            
-//            querySnapshot?.documents.forEach({ queryDocumentSnapshot in
-//                let data = queryDocumentSnapshot.data()
-//                let docId = queryDocumentSnapshot.documentID
-//                // let chatMessage = ChatMessage(data: data)
-//                self.chatMessages.append(.init(documentId: docId, data: data))
-//            })
-        }
+                
+                querySnapshot?.documentChanges.forEach({ change in
+                    if change.type == .added {
+                        let data = change.document.data()
+                        self.chatMessages.append(.init(documentId: change.document.documentID, data: data))
+                    }
+                })
+                
+                DispatchQueue.main.async {
+                    self.count += 1
+                }
+                
+                //            querySnapshot?.documents.forEach({ queryDocumentSnapshot in
+                //                let data = queryDocumentSnapshot.data()
+                //                let docId = queryDocumentSnapshot.documentID
+                //                // let chatMessage = ChatMessage(data: data)
+                //                self.chatMessages.append(.init(documentId: docId, data: data))
+                //            })
+            }
     }
     
     
@@ -88,16 +87,21 @@ class ChatLogViewModel: ObservableObject {
             .document(fromID)
             .collection(toID)
             .document()
-            
         
-        let messageData = [FirebaseConstrants.fromID: fromID, FirebaseConstrants.toID: toID, FirebaseConstrants.text: self.chatText, "timestamp": Timestamp()] as [String : Any]
+        
+        let messageData = [FirebaseConstants.fromID: fromID, FirebaseConstants.toID: toID, FirebaseConstants.text: self.chatText, "timestamp": Timestamp()] as [String : Any]
         
         document.setData(messageData) { error in
             if let error = error {
                 self.errorMessage = "Failed to save message to firestore \(error)"
                 
             }
-            self.chatText = ""
+            
+            self.persistRecentMessage()
+            
+            self.chatText = ""  // Clear the chat text box.
+            self.count += 1 // To trigger autoscroll.
+        
         }
         
         
@@ -112,21 +116,52 @@ class ChatLogViewModel: ObservableObject {
                 
             }
         }
-        
     }
     
+    private func persistRecentMessage() {
+        guard let chatUser = chatUser else { return }
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        guard let toId = self.chatUser?.uid else { return }
+        
+        let document = Firestore.firestore()
+            .collection("recent_messages")
+            .document(uid)
+            .collection("messages")
+            .document(toId)
+        
+        let data = [
+            "timestamp": Timestamp(),
+            FirebaseConstants.text: self.chatText,
+            FirebaseConstants.fromID: uid,
+            FirebaseConstants.toID: toId,
+            FirebaseConstants.profileImage: chatUser.profileImage,
+            FirebaseConstants.email: chatUser.email
+        ] as [String : Any]
+        
+        
+        
+        document.setData(data) { error in
+            if let error = error {
+                self.errorMessage = "Failed to save recent message: \(error)"
+                return
+            }
+        }
+        
+        
+    }
+  
 }
 
 
 
 struct ChatLogView: View {
     
-    let chatUser: ChatUser?
-    
-    init(chatUser: ChatUser?) {
-        self.chatUser = chatUser
-        self.vm = .init(chatUser: chatUser)
-    }
+//    let chatUser: ChatUser?
+//
+//    init(chatUser: ChatUser?) {
+//        self.chatUser = chatUser
+//        self.vm = .init(chatUser: chatUser)
+//    }
     
     @ObservedObject var vm: ChatLogViewModel
     
@@ -140,51 +175,39 @@ struct ChatLogView: View {
                     .background(Color.white.ignoresSafeArea())
             }
         }
-        .navigationTitle(chatUser?.email ?? "")
+        .navigationTitle(vm.chatUser?.email ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            vm.firestoreListener?.remove()
+        }
     }
+    
+    static let emptyScrollToString = "Empty"
     
     private var messagesView: some View {
         ScrollView {
-            ForEach(vm.chatMessages) { message in
+            ScrollViewReader { scrollViewProxy in // using to autoscroll.
+                
                 VStack {
-                    if message.fromID == Auth.auth().currentUser?.uid {
-                        HStack {
-                            Spacer()
-                            HStack {
-                                Text(message.text)
-                                    .foregroundColor(.white)
-                            }
-                            .padding()
-                            .background(Color.blue)
-                            .cornerRadius(8)
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 8)
-                    } else {
-                        HStack {
-                            HStack {
-                                Text(message.text)
-                                    .foregroundColor(Color(.label))
-                            }
-                            .padding()
-                            .background(Color.white)
-                            .cornerRadius(8)
-                            Spacer()
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 8)
+                    ForEach(vm.chatMessages) { message in
+                        
+                        MessageView(message: message)
+                        
+                    }
+                    HStack{ Spacer() }
+                        .id(Self.emptyScrollToString)
+                        .frame(height: 65)  // Need to bump the bottom of the messages above the send area.
+                    
+                }
+                .onReceive(vm.$count) { _ in
+                    withAnimation(.easeOut(duration: 0.5)) {
+                        scrollViewProxy.scrollTo("Empty", anchor: .bottom)
+                        
                     }
                 }
-            
-              
             }
-            
-            HStack{ Spacer() }
-                .frame(height: 50)
         }
         .background(Color(.init(white: 0.95, alpha: 1)))
-        
     }
     
     
@@ -219,6 +242,44 @@ struct ChatLogView: View {
     }
 }
 
+struct MessageView:  View {
+    
+    let message: ChatMessage
+    
+    var body: some View {
+        
+        VStack {
+            if message.fromID == Auth.auth().currentUser?.uid {
+                HStack {
+                    Spacer()
+                    HStack {
+                        Text(message.text)
+                            .foregroundColor(.white)
+                    }
+                    .padding()
+                    .background(Color.blue)
+                    .cornerRadius(8)
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+            } else {
+                HStack {
+                    HStack {
+                        Text(message.text)
+                            .foregroundColor(Color(.label))
+                    }
+                    .padding()
+                    .background(Color.white)
+                    .cornerRadius(8)
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+            }
+        }
+    }
+}
+
 private struct DescriptionPlaceholder: View {
     var body: some View {
         HStack {
@@ -234,8 +295,10 @@ private struct DescriptionPlaceholder: View {
 
 struct ChatLogView_Previews: PreviewProvider {
     static var previews: some View {
-        NavigationView {
-            ChatLogView(chatUser: .init(data: ["uid": "flGH1I0s8wVs7nt40M1SDblWmxg1", "email": "testing123@gmail.com"]))
-        }
+       
+            
+            //ChatLogView(chatUser: .init(data: ["uid": "flGH1I0s8wVs7nt40M1SDblWmxg1", "email": "testing123@gmail.com"]))
+            MainMessagesView()
+        
     }
 }
